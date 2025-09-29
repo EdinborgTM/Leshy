@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math/rand"
 	"net"
 	"os"
 	"os/signal"
@@ -31,6 +32,7 @@ type PortResult struct {
 	Port    int    `json:"port"`
 	State   string `json:"state"`
 	Banner  string `json:"banner,omitempty"`
+	Version string `json:"version,omitempty"`
 	Elapsed int64  `json:"elapsed_ms"`
 }
 
@@ -62,6 +64,49 @@ func classifyError(err error) string {
 	return "error"
 }
 
+func getBanner(conn net.Conn, port int) (banner, version string) {
+	_ = conn.SetReadDeadline(time.Now().Add(400 * time.Millisecond))
+	buf := make([]byte, 256)
+	n, _ := conn.Read(buf)
+	if n == 0 {
+		return "", ""
+	}
+	banner = strings.TrimSpace(string(buf[:n]))
+	if len(banner) > 256 {
+		banner = banner[:256]
+	}
+
+	// Try HTTP for port 80 or 443
+	if port == 80 || port == 443 {
+		_, _ = conn.Write([]byte("GET / HTTP/1.0\r\n\r\n"))
+		_ = conn.SetReadDeadline(time.Now().Add(400 * time.Millisecond))
+		n, _ = conn.Read(buf)
+		if n > 0 {
+			response := string(buf[:n])
+			lines := strings.Split(response, "\r\n")
+			for _, line := range lines {
+				if strings.HasPrefix(strings.ToLower(line), "server:") {
+					version = strings.TrimSpace(strings.TrimPrefix(line, "Server:"))
+					if version != "" {
+						banner = version // Use Server header as banner for HTTP
+					}
+				}
+			}
+		}
+	}
+
+	// Extract version from banner for other services
+	if version == "" && banner != "" {
+		if strings.Contains(banner, "SSH-") {
+			version = strings.SplitN(banner, "\n", 2)[0]
+		} else if strings.Contains(banner, "FTP") || strings.Contains(banner, "220 ") {
+			version = strings.SplitN(banner, "\n", 2)[0]
+		}
+	}
+
+	return banner, version
+}
+
 func worker(ctx context.Context, jobs <-chan int, results chan<- PortResult, wg *sync.WaitGroup, target string, timeout time.Duration, doBanner bool, lowResource bool) {
 	defer wg.Done()
 	dialer := &net.Dialer{}
@@ -91,20 +136,12 @@ func worker(ctx context.Context, jobs <-chan int, results chan<- PortResult, wg 
 				continue
 			}
 
-			var banner string
+			var banner, version string
 			if doBanner {
-				_ = conn.SetReadDeadline(time.Now().Add(400 * time.Millisecond))
-				buf := make([]byte, 256)
-				n, _ := conn.Read(buf)
-				if n > 0 {
-					banner = strings.TrimSpace(string(buf[:n]))
-					if len(banner) > 256 {
-						banner = banner[:256]
-					}
-				}
+				banner, version = getBanner(conn, port)
 			}
 			_ = conn.Close()
-			results <- PortResult{Port: port, State: "open", Banner: banner, Elapsed: elapsed}
+			results <- PortResult{Port: port, State: "open", Banner: banner, Version: version, Elapsed: elapsed}
 		}
 	}
 }
@@ -121,17 +158,18 @@ func main() {
 	var target string
 	var minPort, maxPort, threads int
 	var timeoutMs int
-	var doBanner, verbose, lowResource bool
+	var doBanner, verbose, lowResource, evasion bool
 	var outFile string
 
 	flag.StringVar(&target, "t", "", "hadaf (IP ya hostname) - lazem")
 	flag.IntVar(&minPort, "m", 1, "kamtarin port")
 	flag.IntVar(&maxPort, "x", 1024, "bishtarin port")
 	flag.IntVar(&threads, "r", 0, "tedad nokh (0 = auto)")
-	flag.IntVar(&timeoutMs, "o", 1000, "timeout (ms)")
-	flag.BoolVar(&doBanner, "b", false, "khandan banner")
+	flag.IntVar(&timeoutMs, "o", 1000, "timeout (ms, faghat ba -l)")
+	flag.BoolVar(&doBanner, "b", false, "khandan banner va version")
 	flag.BoolVar(&verbose, "v", false, "khoruji mofasal")
 	flag.BoolVar(&lowResource, "l", false, "kam masraf baraye termux")
+	flag.BoolVar(&evasion, "f", false, "evasion mode (mofasal az firewall)")
 	flag.StringVar(&outFile, "u", "/sdcard/leshy_scan.json", "file JSON")
 	flag.Parse()
 
@@ -177,6 +215,9 @@ func main() {
 	}
 
 	fmt.Printf("%s>> Scan %s%s%s\n", Cyan, Bold, target, Reset)
+	if evasion {
+		fmt.Printf("%s>> Evasion mode: randomized ports + delay%s\n", Cyan, Reset)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -210,7 +251,10 @@ func main() {
 			if r.State == "open" || verbose {
 				fmt.Printf("%s%d: %s%s%s\n", Green, r.Port, Bold, r.State, Reset)
 				if r.Banner != "" {
-					fmt.Printf("%s%s%s\n", Cyan, r.Banner, Reset)
+					fmt.Printf("%sBanner: %s%s\n", Cyan, r.Banner, Reset)
+				}
+				if r.Version != "" {
+					fmt.Printf("%sVersion: %s%s\n", Cyan, r.Version, Reset)
 				}
 			}
 			if r.State == "open" {
@@ -239,12 +283,23 @@ func main() {
 		}
 	}()
 
-totalLoop:
+	// Enqueue ports
+	ports := make([]int, 0, totalPorts)
 	for p := minPort; p <= maxPort; p++ {
+		ports = append(ports, p)
+	}
+	if evasion {
+		rand.Shuffle(len(ports), func(i, j int) { ports[i], ports[j] = ports[j], ports[i] })
+	}
+totalLoop:
+	for _, p := range ports {
 		select {
 		case <-ctx.Done():
 			break totalLoop
 		case jobs <- p:
+			if evasion {
+				time.Sleep(time.Millisecond * time.Duration(rand.Intn(100)))
+			}
 		}
 	}
 	close(jobs)
