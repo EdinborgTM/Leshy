@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,11 +20,11 @@ import (
 
 // ANSI color codes
 const (
-	Reset  = "\033[0m"
-	Red    = "\033[31m"
-	Green  = "\033[32m"
-	Cyan   = "\033[36m"
-	Bold   = "\033[1m"
+	Reset = "\033[0m"
+	Red   = "\033[31m"
+	Green = "\033[32m"
+	Cyan  = "\033[36m"
+	Bold  = "\033[1m"
 )
 
 type PortResult struct {
@@ -61,7 +62,7 @@ func classifyError(err error) string {
 	return "error"
 }
 
-func worker(ctx context.Context, jobs <-chan int, results chan<- PortResult, wg *sync.WaitGroup, target string, timeout time.Duration, doBanner bool) {
+func worker(ctx context.Context, jobs <-chan int, results chan<- PortResult, wg *sync.WaitGroup, target string, timeout time.Duration, doBanner bool, lowResource bool) {
 	defer wg.Done()
 	dialer := &net.Dialer{}
 	for {
@@ -74,9 +75,15 @@ func worker(ctx context.Context, jobs <-chan int, results chan<- PortResult, wg 
 			}
 			start := time.Now()
 			address := net.JoinHostPort(target, strconv.Itoa(port))
-			connCtx, cancel := context.WithTimeout(ctx, timeout)
-			conn, err := dialer.DialContext(connCtx, "tcp", address)
-			cancel()
+			var conn net.Conn
+			var err error
+			if lowResource {
+				connCtx, cancel := context.WithTimeout(ctx, timeout)
+				conn, err = dialer.DialContext(connCtx, "tcp", address)
+				cancel()
+			} else {
+				conn, err = dialer.DialContext(ctx, "tcp", address)
+			}
 			elapsed := time.Since(start).Milliseconds()
 
 			if err != nil {
@@ -87,20 +94,13 @@ func worker(ctx context.Context, jobs <-chan int, results chan<- PortResult, wg 
 			var banner string
 			if doBanner {
 				_ = conn.SetReadDeadline(time.Now().Add(400 * time.Millisecond))
-				buf := make([]byte, 512)
+				buf := make([]byte, 256)
 				n, _ := conn.Read(buf)
 				if n > 0 {
-					raw := string(buf[:n])
-					raw = strings.Map(func(r rune) rune {
-						if r == '\n' || r == '\r' || (r >= 0x20 && r <= 0x7e) {
-							return r
-						}
-						return -1
-					}, raw)
-					if len(raw) > 512 {
-						raw = raw[:512]
+					banner = strings.TrimSpace(string(buf[:n]))
+					if len(banner) > 256 {
+						banner = banner[:256]
 					}
-					banner = raw
 				}
 			}
 			_ = conn.Close()
@@ -121,22 +121,23 @@ func main() {
 	var target string
 	var minPort, maxPort, threads int
 	var timeoutMs int
-	var doBanner, verbose bool
+	var doBanner, verbose, lowResource bool
 	var outFile string
 
-	flag.StringVar(&target, "target", "", "hadaf (IP ya hostname) - lazem")
-	flag.IntVar(&minPort, "min", 1, "kamtarin port")
-	flag.IntVar(&maxPort, "max", 1024, "bishtarin port")
-	flag.IntVar(&threads, "threads", 100, "tedad nokh haye hamzaman")
-	flag.IntVar(&timeoutMs, "timeout", 800, "timeout etesal (milli sanie)")
-	flag.BoolVar(&doBanner, "banner", false, "khandan banner bad az etesal")
-	flag.BoolVar(&verbose, "verbose", false, "nashun dadan khoruji mofasal")
-	flag.StringVar(&outFile, "out", "scans/leshy_scan.json", "file khoruji JSON")
+	flag.StringVar(&target, "t", "", "hadaf (IP ya hostname) - lazem")
+	flag.IntVar(&minPort, "m", 1, "kamtarin port")
+	flag.IntVar(&maxPort, "x", 1024, "bishtarin port")
+	flag.IntVar(&threads, "r", 0, "tedad nokh (0 = auto)")
+	flag.IntVar(&timeoutMs, "o", 1000, "timeout (ms)")
+	flag.BoolVar(&doBanner, "b", false, "khandan banner")
+	flag.BoolVar(&verbose, "v", false, "khoruji mofasal")
+	flag.BoolVar(&lowResource, "l", false, "kam masraf baraye termux")
+	flag.StringVar(&outFile, "u", "/sdcard/leshy_scan.json", "file JSON")
 	flag.Parse()
 
 	if target == "" {
-		fmt.Printf("%sKheta: bayad hadaf (IP ya hostname) ro moshakhas konid. Mesal: --target 192.168.1.1%s\n", Red, Reset)
-		fmt.Println("Baraye rahnuma: ./leshy --help")
+		fmt.Printf("%sKheta: -t lazem%s\n", Red, Reset)
+		fmt.Println("Rahnuma: ./leshy -h")
 		os.Exit(1)
 	}
 	if minPort < 1 {
@@ -146,11 +147,17 @@ func main() {
 		maxPort = 65535
 	}
 	if minPort > maxPort {
-		fmt.Printf("%sKheta: port avval nemitune az port akhar bozorgtar bashe%s\n", Red, Reset)
+		fmt.Printf("%sKheta: -m > -x nist%s\n", Red, Reset)
 		os.Exit(1)
 	}
+	if lowResource {
+		threads = 20
+		timeoutMs = 1000
+	} else if threads == 0 {
+		threads = runtime.NumCPU() * 4
+	}
 	if threads < 1 {
-		threads = 100
+		threads = 20
 	}
 
 	ip := target
@@ -159,17 +166,17 @@ func main() {
 		if err == nil && len(ips) > 0 {
 			ip = ips[0].String()
 		} else {
-			fmt.Printf("%sKheta: nemishe %s ro resolve kard: %v%s\n", Red, target, err, Reset)
+			fmt.Printf("%sKheta: %s resolve nashod%s\n", Red, target, Reset)
 			os.Exit(1)
 		}
 	}
 
 	if err := ensureDir(outFile); err != nil {
-		fmt.Printf("%sKheta: nemishe pushe khoruji ro sakht: %v%s\n", Red, err, Reset)
+		fmt.Printf("%sKheta: pushe %s nasakht%s\n", Red, filepath.Dir(outFile), Reset)
 		os.Exit(1)
 	}
 
-	fmt.Printf("%sShuru scan rooye %s%s (%s) [port-ha: %d-%d]%s\n", Cyan, Bold, target, ip, minPort, maxPort, Reset)
+	fmt.Printf("%s>> Scan %s%s%s\n", Cyan, Bold, target, Reset)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -177,20 +184,20 @@ func main() {
 	signal.Notify(sigch, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigch
-		fmt.Printf("\n%sScan ghat shod tavasot karbar...%s\n", Red, Reset)
+		fmt.Printf("\n%s!! Ghat%s\n", Red, Reset)
 		cancel()
 	}()
 
 	timeout := time.Duration(timeoutMs) * time.Millisecond
-	jobs := make(chan int, 1000)
-	results := make(chan PortResult, 1000)
+	totalPorts := maxPort - minPort + 1
+	jobs := make(chan int, totalPorts)
+	results := make(chan PortResult, totalPorts)
 
 	var wg sync.WaitGroup
 	var collectWg sync.WaitGroup
-	found := make([]PortResult, 0, (maxPort-minPort+1))
+	found := make([]PortResult, 0, totalPorts)
 	collectWg.Add(1)
 
-	totalPorts := maxPort - minPort + 1
 	progress := 0
 	progressMutex := &sync.Mutex{}
 	openPorts := 0
@@ -201,16 +208,10 @@ func main() {
 			progressMutex.Lock()
 			progress++
 			if r.State == "open" || verbose {
-				banner := r.Banner
-				if banner == "" {
-					banner = "-"
+				fmt.Printf("%s%d: %s%s%s\n", Green, r.Port, Bold, r.State, Reset)
+				if r.Banner != "" {
+					fmt.Printf("%s%s%s\n", Cyan, r.Banner, Reset)
 				}
-				fmt.Printf("%sPort %d: %s%s %s%s\n", Green, r.Port, Bold, r.State, func() string {
-					if r.Banner != "" {
-						return fmt.Sprintf("(banner: %s)", r.Banner)
-					}
-					return ""
-				}(), Reset)
 			}
 			if r.State == "open" {
 				openPorts++
@@ -222,18 +223,18 @@ func main() {
 
 	for i := 0; i < threads; i++ {
 		wg.Add(1)
-		go worker(ctx, jobs, results, &wg, ip, timeout, doBanner)
+		go worker(ctx, jobs, results, &wg, ip, timeout, doBanner, lowResource)
 	}
 
 	startTime := time.Now()
 
 	go func() {
-		ticker := time.NewTicker(2 * time.Second)
+		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
 			progressMutex.Lock()
 			percent := float64(progress) / float64(totalPorts) * 100
-			fmt.Printf("\r%s%d/%d port scan shod (%.0f%%)%s", Cyan, progress, totalPorts, percent, Reset)
+			fmt.Printf("\r%s%.0f%%%s", Cyan, percent, Reset)
 			progressMutex.Unlock()
 		}
 	}()
@@ -268,27 +269,26 @@ totalLoop:
 	tmp := outFile + ".tmp"
 	f, err := os.Create(tmp)
 	if err != nil {
-		fmt.Printf("%sKheta dar sakht file moghat: %v%s\n", Red, err, Reset)
+		fmt.Printf("%sKheta: file %s nasakht%s\n", Red, tmp, Reset)
 		os.Exit(1)
 	}
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(scanRes); err != nil {
-		fmt.Printf("%sKheta dar neveshtan JSON: %v%s\n", Red, err, Reset)
+		fmt.Printf("%sKheta: JSON nanevesht%s\n", Red, Reset)
 		f.Close()
 		os.Remove(tmp)
 		os.Exit(1)
 	}
 	f.Close()
 	if err := os.Rename(tmp, outFile); err != nil {
-		fmt.Printf("%sKheta dar taghir esm file: %v%s\n", Red, err, Reset)
+		fmt.Printf("%sKheta: rename %s nashod%s\n", Red, outFile, Reset)
 		os.Exit(1)
 	}
 
-	fmt.Printf("\n%sScan tamam shod!%s\n", Green, Reset)
-	fmt.Printf("%sHadaf: %s%s (%s)%s\n", Cyan, Bold, target, ip, Reset)
-	fmt.Printf("%sPort-haye scan shode: %d%s\n", Cyan, totalPorts, Reset)
-	fmt.Printf("%sPort-haye baz: %d%s\n", Green, openPorts, Reset)
-	fmt.Printf("%sZaman kol: %d milli sanie%s\n", Cyan, elapsed, Reset)
-	fmt.Printf("%sFile khoruji: %s%s%s\n", Cyan, Bold, outFile, Reset)
+	fmt.Printf("\n%s>> Tamam!%s\n", Green, Reset)
+	fmt.Printf("%s%s%s\n", Cyan, target, Reset)
+	fmt.Printf("%sBaz: %d%s\n", Green, openPorts, Reset)
+	fmt.Printf("%sZaman: %d ms%s\n", Cyan, elapsed, Reset)
+	fmt.Printf("%sFile: %s%s%s\n", Cyan, Bold, outFile, Reset)
 }

@@ -1,80 +1,91 @@
 # Leshy - Port Scanner
 
-Leshy yek scanner port sadeh, ghavi va sari ba zaban Go hast ke baraye skan kardan port-haye TCP estefade mishe. In barname az nokh-haye hamzaman (multi-threading) baraye afzayesh sorat estefade mikone va natayej ro be surat JSON zakhire mikone. Ba estefade az in barname mitunid vaziyat port-ha (baz, baste, ya filtered) ro check konid va dar surat niaz banner service-ha ro bekhunid.
+Leshy yek scanner port sari, ghavi va sadeh ba zaban Go hast ke baraye skan kardan port-haye TCP estefade mishe. In barname baraye Termux va system-haye dige beine shode, az nokh-haye hamzaman baraye sorat besiar bala estefade mikone, va natayej ro dar JSON zakhire mikone. Mitune vaziyat port-ha (baz, baste, ya filtered) va banner service-ha ro neshun bede.
 
 ## Vizhegi-ha
-- Skan kardan port-haye TCP ba sorat bala
-- Poshtibani az multi-threading baraye afzayesh efficiency
+- Skan TCP ba sorat besiar bala (bedun timeout dar halat adi)
+- Poshtibani az multi-threading ba nokh-haye auto
 - Khoruji JSON baraye tahlil asun
-- Poshtibani az khandan banner (optional)
-- Rangi kardan khoruji baraye khunayi behtar (ba ANSI codes)
+- Khandan banner (optional)
+- Rangi ba ANSI codes baraye khunayi
 - Bedun vabastegi be ketabkhune-haye khareji
-- Poshtibani az signal handling baraye ghat scan
+- Beinesazi baraye Termux ba -l
+- Ghat scan ba signal
 
 ## Nasb
-Baraye estefade az Leshy, bayad Go (golang) rooye system nasb bashad (version 1.16 ya balatar). Hich vabastegi khareji nadare, pas faghat kafi ast code ro download konid va compile konid.
+Bayad Go (golang) rooye system nasb bashad (version 1.16 ya balatar). Dar Termux, Go ro ba in dastur nasb konid:
 
-1. Code ro clone ya download konid:
+```bash
+pkg install golang
+```
+
+1. Code ro clone konid:
    ```bash
    git clone https://github.com/EdinborgTM/Leshy.git
    cd Leshy
    ```
 
-2. Barname ro compile konid:
+2. Compile konid:
    ```bash
    go build -o leshy leshy.go
    ```
 
+3. Dar Termux, dastresi be /sdcard bedid:
+   ```bash
+   termux-setup-storage
+   ```
+
 ## Estefade
-Baraye ejra, az dastur zir estefade konid:
+Baraye ejra:
 ```bash
-./leshy --target <IP ya hostname> [options]
+./leshy -t <IP ya hostname> [options]
 ```
 
 ### Parametrha
 | Parametr | Tozih | Pishfarz |
 |----------|-------|----------|
-| `--target` | Hadaf (IP ya hostname) - lazem | - |
-| `--min` | Kamtarin port baraye skan | 1 |
-| `--max` | Bishtarin port baraye skan | 1024 |
-| `--threads` | Tedad nokh-haye hamzaman | 100 |
-| `--timeout` | Timeout etesal (milli sanie) | 800 |
-| `--banner` | Khandan banner bad az etesal | false |
-| `--verbose` | Nashun dadan khoruji mofasal (hamin port-ha) | false |
-| `--out` | File khoruji JSON | scans/leshy_scan.json |
+| `-t` | Hadaf (IP ya hostname) - lazem | - |
+| `-m` | Kamtarin port | 1 |
+| `-x` | Bishtarin port | 1024 |
+| `-r` | Tedad nokh (0 = auto) | 0 |
+| `-o` | Timeout (ms, faghat ba -l) | 1000 |
+| `-b` | Khandan banner | false |
+| `-v` | Khoruji mofasal | false |
+| `-l` | Kam masraf baraye Termux | false |
+| `-u` | File JSON | /sdcard/leshy_scan.json |
 
 ### Mesal-ha
-1. Skan kardan port-haye 1 ta 100 rooye 192.168.1.10:
+1. Skan sari port-haye 1 ta 100:
    ```bash
-   ./leshy --target 192.168.1.10 --min 1 --max 100
+   ./leshy -t 192.168.1.10 -m 1 -x 100
    ```
 
-2. Skan ba banner va khoruji mofasal:
+2. Skan ba banner va mofasal:
    ```bash
-   ./leshy --target example.com --min 1 --max 1000 --banner --verbose
+   ./leshy -t example.com -m 1 -x 1000 -b -v
    ```
 
-3. Skan ba timeout bishtar va thread kamtar:
+3. Skan kam masraf baraye Termux:
    ```bash
-   ./leshy --target 127.0.0.1 --min 1 --max 65535 --threads 50 --timeout 1000
+   ./leshy -t 127.0.0.1 -m 1 -x 100 -l
    ```
 
 ### Nemune khoruji
 ```bash
->> Shuru scan rooye 192.168.1.10 (192.168.1.10) [port-ha: 1-100]
->> 50/100 port scan shod (50%)
->> Port 22: open (banner: SSH-2.0-OpenSSH_8.0)
->> Port 80: open
->> Scan tamam shod!
->> Hadaf: 192.168.1.10 (192.168.1.10)
->> Port-haye scan shode: 100
->> Port-haye baz: 2
->> Zaman kol: 1234 milli sanie
->> File khoruji: scans/leshy_scan.json
+>> Scan 192.168.1.10
+>> 50%
+>> 22: open
+SSH-2.0-OpenSSH_8.0
+>> 80: open
+>> Tamam!
+>> 192.168.1.10
+>> Baz: 2
+>> Zaman: 1234 ms
+>> File: /sdcard/leshy_scan.json
 ```
 
 ## File khoruji
-Natayej scan dar yek file JSON zakhire mishan (pishfarz: `scans/leshy_scan.json`). Sakhtar file JSON be in surat ast:
+Natayej dar JSON zakhire mishan (pishfarz: `/sdcard/leshy_scan.json`):
 ```json
 {
   "target": "192.168.1.10",
@@ -90,12 +101,12 @@ Natayej scan dar yek file JSON zakhire mishan (pishfarz: `scans/leshy_scan.json`
 ```
 
 ## Ehtiyat
-- **Etebar**: Faghat rooye hadaf-hayi ke ejaze skan daran (masalan system-haye khodetun) estefade konid. Skan kardan bi ejaze ghanooni nist.
-- **Timeout**: Agar timeout khili kam bashe, natayej gheyre daghigh mishan. Pishnahad: 500-1000 milli sanie.
-- **Threads**: Tedad thread-haye bishtar sorat ro afzayesh mide, ama mitune be system ya shabake feshar biyare.
+- **Etebar**: Faghat rooye system-haye khodetun skan konid. Skan bi ejaze ghanooni nist.
+- **Termux**: Az `-l` baraye kam kardan masraf estefade konid. Bedun `-l`, skan ba maximum sorat ejra mishe.
+- **Dastresi**: Dar Termux, `/sdcard` bayad dastresi dashte bashe:
+  ```bash
+  termux-setup-storage
+  ```
 
 ## License
 In project tahte ejaze-name [MIT License](LICENSE) montasher shode ast.
-
-## Tamase ba ma
-Agar sual ya pishnahadi darid, mitunid dar GitHub issue besazid ya ba email <your-email> tamas begirid.
