@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -28,88 +29,122 @@ const (
 	Bold  = "\033[1m"
 )
 
-type PortResult struct {
+type NatijePort struct {
 	Port    int    `json:"port"`
-	State   string `json:"state"`
-	Banner  string `json:"banner,omitempty"`
-	Version string `json:"version,omitempty"`
-	Elapsed int64  `json:"elapsed_ms"`
+	Protokol string `json:"protokol"`
+	Vaziyat string `json:"vaziyat"`
+	Baner   string `json:"baner,omitempty"`
+	Noskhe  string `json:"noskhe,omitempty"`
+	Zaman   int64  `json:"zaman_ms"`
 }
 
-type ScanResult struct {
-	Target   string       `json:"target"`
-	Started  string       `json:"started"`
-	Finished string       `json:"finished"`
-	Elapsed  int64        `json:"elapsed_ms"`
-	Ports    []PortResult `json:"ports"`
+type NatijeScan struct {
+	Hadaf    string       `json:"hadaf"`
+	Shuru    string       `json:"shuru"`
+	Tamam    string       `json:"tamam"`
+	ZamanKol int64        `json:"zaman_ms"`
+	PortHa   []NatijePort `json:"port_ha"`
 }
 
-func classifyError(err error) string {
+func tasnifKheta(err error) string {
 	if err == nil {
-		return "open"
+		return "baz"
 	}
 	if ne, ok := err.(net.Error); ok && ne.Timeout() {
 		return "filtered"
 	}
 	lerr := strings.ToLower(err.Error())
 	if strings.Contains(lerr, "refused") || strings.Contains(lerr, "connection refused") {
-		return "closed"
+		return "baste"
 	}
 	if strings.Contains(lerr, "no route to host") || strings.Contains(lerr, "network is unreachable") {
-		return "network-unreachable"
+		return "shabake-napadid"
 	}
 	if strings.Contains(lerr, "i/o timeout") || strings.Contains(lerr, "deadline") {
 		return "filtered"
 	}
-	return "error"
+	return "kheta"
 }
 
-func getBanner(conn net.Conn, port int) (banner, version string) {
-	_ = conn.SetReadDeadline(time.Now().Add(400 * time.Millisecond))
-	buf := make([]byte, 256)
+func girPayloadUDP(noepayload string) []byte {
+	switch strings.ToLower(noepayload) {
+	case "dns":
+		// DNS Query for A record with proper header and question (example.com)
+		data, _ := hex.DecodeString("1234 0100 0001 0000 0000 0000 07 65 78 61 6d 70 6c 65 03 63 6f 6d 00 00 01 00 01")
+		return data
+	case "ntp":
+		// NTP Version Info Request (stratum 0, poll 3, precision -6)
+		data, _ := hex.DecodeString("1b 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00")
+		return data
+	case "snmp":
+		// SNMP GetRequest for sysDescr (OID: 1.3.6.1.2.1.1.1.0)
+		data, _ := hex.DecodeString("30 2c 02 01 00 04 06 70 75 62 6c 69 63 a0 1f 02 04 00 00 00 01 02 01 00 02 01 00 30 11 30 0f 06 0b 2b 06 01 02 01 01 01 00 05 00")
+		return data
+	default:
+		return []byte{0x00} // Minimal probe for no payload
+	}
+}
+
+func girBaner(conn net.Conn, port int, protokol string, noepayload string) (baner, noskhe string) {
+	if protokol == "udp" {
+		if payload := girPayloadUDP(noepayload); payload != nil {
+			_, _ = conn.Write(payload)
+		}
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(600 * time.Millisecond))
+	buf := make([]byte, 1024) // Increased buffer for detailed UDP responses
 	n, _ := conn.Read(buf)
 	if n == 0 {
 		return "", ""
 	}
-	banner = strings.TrimSpace(string(buf[:n]))
-	if len(banner) > 256 {
-		banner = banner[:256]
+	baner = strings.TrimSpace(string(buf[:n]))
+	if len(baner) > 1024 {
+		baner = baner[:1024]
 	}
 
-	// Try HTTP for port 80 or 443
-	if port == 80 || port == 443 {
-		_, _ = conn.Write([]byte("GET / HTTP/1.0\r\n\r\n"))
-		_ = conn.SetReadDeadline(time.Now().Add(400 * time.Millisecond))
+	if protokol == "tcp" && (port == 80 || port == 443) {
+		_, _ = conn.Write([]byte("GET / HTTP/1.0\r\nHost: localhost\r\n\r\n"))
+		_ = conn.SetReadDeadline(time.Now().Add(600 * time.Millisecond))
 		n, _ = conn.Read(buf)
 		if n > 0 {
 			response := string(buf[:n])
 			lines := strings.Split(response, "\r\n")
 			for _, line := range lines {
 				if strings.HasPrefix(strings.ToLower(line), "server:") {
-					version = strings.TrimSpace(strings.TrimPrefix(line, "Server:"))
-					if version != "" {
-						banner = version // Use Server header as banner for HTTP
+					noskhe = strings.TrimSpace(strings.TrimPrefix(line, "Server:"))
+					if noskhe != "" {
+						baner = noskhe
 					}
 				}
 			}
 		}
 	}
 
-	// Extract version from banner for other services
-	if version == "" && banner != "" {
-		if strings.Contains(banner, "SSH-") {
-			version = strings.SplitN(banner, "\n", 2)[0]
-		} else if strings.Contains(banner, "FTP") || strings.Contains(banner, "220 ") {
-			version = strings.SplitN(banner, "\n", 2)[0]
+	if noskhe == "" && baner != "" {
+		// Extract version from banner
+		lowerBaner := strings.ToLower(baner)
+		if strings.Contains(lowerBaner, "ssh-") || strings.Contains(lowerBaner, "ftp") || strings.Contains(lowerBaner, "220 ") {
+			noskhe = strings.SplitN(baner, "\n", 2)[0]
+		} else if strings.Contains(lowerBaner, "bind") {
+			if idx := strings.Index(baner, "BIND"); idx >= 0 {
+				noskhe = strings.TrimSpace(baner[idx:])
+			}
+		} else if strings.Contains(lowerBaner, "ntpd") || strings.Contains(lowerBaner, "ntp") {
+			if idx := strings.Index(lowerBaner, "ntpd"); idx >= 0 {
+				noskhe = strings.TrimSpace(baner[idx:])
+			} else if idx := strings.Index(lowerBaner, "ntp"); idx >= 0 {
+				noskhe = strings.TrimSpace(baner[idx:])
+			}
+		} else if strings.Contains(lowerBaner, "snmp") {
+			noskhe = strings.TrimSpace(baner)
 		}
 	}
 
-	return banner, version
+	return baner, noskhe
 }
 
-func worker(ctx context.Context, jobs <-chan int, results chan<- PortResult, wg *sync.WaitGroup, target string, timeout time.Duration, doBanner bool, lowResource bool) {
+func kargar(ctx context.Context, jobs <-chan int, natayej chan<- NatijePort, wg *sync.WaitGroup, hadaf string, timeout time.Duration, doBaner bool, kamMasraf bool, protokol string, noepayload string) {
 	defer wg.Done()
-	dialer := &net.Dialer{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -119,34 +154,52 @@ func worker(ctx context.Context, jobs <-chan int, results chan<- PortResult, wg 
 				return
 			}
 			start := time.Now()
-			address := net.JoinHostPort(target, strconv.Itoa(port))
+			addr := net.JoinHostPort(hadaf, strconv.Itoa(port))
 			var conn net.Conn
 			var err error
-			if lowResource {
-				connCtx, cancel := context.WithTimeout(ctx, timeout)
-				conn, err = dialer.DialContext(connCtx, "tcp", address)
-				cancel()
+			if protokol == "tcp" {
+				dialer := &net.Dialer{}
+				if kamMasraf {
+					connCtx, cancel := context.WithTimeout(ctx, timeout)
+					conn, err = dialer.DialContext(connCtx, "tcp", addr)
+					cancel()
+				} else {
+					conn, err = dialer.DialContext(ctx, "tcp", addr)
+				}
 			} else {
-				conn, err = dialer.DialContext(ctx, "tcp", address)
+				udpAddr, err := net.ResolveUDPAddr("udp", addr)
+				if err != nil {
+					natayej <- NatijePort{Port: port, Protokol: protokol, Vaziyat: tasnifKheta(err), Zaman: time.Since(start).Milliseconds()}
+					continue
+				}
+				var udpConn *net.UDPConn
+				if kamMasraf {
+					connCtx, cancel := context.WithTimeout(ctx, timeout)
+					udpConn, err = net.DialUDP("udp", nil, udpAddr)
+					cancel()
+				} else {
+					udpConn, err = net.DialUDP("udp", nil, udpAddr)
+				}
+				conn = udpConn
 			}
-			elapsed := time.Since(start).Milliseconds()
+			zaman := time.Since(start).Milliseconds()
 
 			if err != nil {
-				results <- PortResult{Port: port, State: classifyError(err), Elapsed: elapsed}
+				natayej <- NatijePort{Port: port, Protokol: protokol, Vaziyat: tasnifKheta(err), Zaman: zaman}
 				continue
 			}
 
-			var banner, version string
-			if doBanner {
-				banner, version = getBanner(conn, port)
+			var baner, noskhe string
+			if doBaner {
+				baner, noskhe = girBaner(conn, port, protokol, noepayload)
 			}
 			_ = conn.Close()
-			results <- PortResult{Port: port, State: "open", Banner: banner, Version: version, Elapsed: elapsed}
+			natayej <- NatijePort{Port: port, Protokol: protokol, Vaziyat: "baz", Baner: baner, Noskhe: noskhe, Zaman: zaman}
 		}
 	}
 }
 
-func ensureDir(path string) error {
+func sakhtPushe(path string) error {
 	d := filepath.Dir(path)
 	if d == "." || d == "" {
 		return nil
@@ -155,25 +208,27 @@ func ensureDir(path string) error {
 }
 
 func main() {
-	var target string
-	var minPort, maxPort, threads int
+	var hadaf string
+	var minPort, maxPort, nokh int
 	var timeoutMs int
-	var doBanner, verbose, lowResource, evasion bool
-	var outFile string
+	var doBaner, mofasal, kamMasraf, makhfi bool
+	var fileJSON, protokol, noepayload string
 
-	flag.StringVar(&target, "t", "", "hadaf (IP ya hostname) - lazem")
+	flag.StringVar(&hadaf, "t", "", "hadaf (IP ya hostname) - lazem")
 	flag.IntVar(&minPort, "m", 1, "kamtarin port")
 	flag.IntVar(&maxPort, "x", 1024, "bishtarin port")
-	flag.IntVar(&threads, "r", 0, "tedad nokh (0 = auto)")
+	flag.IntVar(&nokh, "r", 0, "tedad nokh (0 = auto)")
 	flag.IntVar(&timeoutMs, "o", 1000, "timeout (ms, faghat ba -l)")
-	flag.BoolVar(&doBanner, "b", false, "khandan banner va version")
-	flag.BoolVar(&verbose, "v", false, "khoruji mofasal")
-	flag.BoolVar(&lowResource, "l", false, "kam masraf baraye termux")
-	flag.BoolVar(&evasion, "f", false, "evasion mode (mofasal az firewall)")
-	flag.StringVar(&outFile, "u", "/sdcard/leshy_scan.json", "file JSON")
+	flag.BoolVar(&doBaner, "b", false, "khandan baner va noskhe")
+	flag.BoolVar(&mofasal, "v", false, "khoruji mofasal")
+	flag.BoolVar(&kamMasraf, "l", false, "kam masraf baraye termux")
+	flag.BoolVar(&makhfi, "f", false, "makhfi az firewall")
+	flag.StringVar(&fileJSON, "u", "/sdcard/leshy_scan.json", "file JSON")
+	flag.StringVar(&protokol, "p", "tcp", "protokol (tcp ya udp)")
+	flag.StringVar(&noepayload, "y", "none", "payload baraye udp (dns, ntp, snmp, ya none)")
 	flag.Parse()
 
-	if target == "" {
+	if hadaf == "" {
 		fmt.Printf("%sKheta: -t lazem%s\n", Red, Reset)
 		fmt.Println("Rahnuma: ./leshy -h")
 		os.Exit(1)
@@ -188,35 +243,43 @@ func main() {
 		fmt.Printf("%sKheta: -m > -x nist%s\n", Red, Reset)
 		os.Exit(1)
 	}
-	if lowResource {
-		threads = 20
-		timeoutMs = 1000
-	} else if threads == 0 {
-		threads = runtime.NumCPU() * 4
+	if protokol != "tcp" && protokol != "udp" {
+		fmt.Printf("%sKheta: -p bayad tcp ya udp bashe%s\n", Red, Reset)
+		os.Exit(1)
 	}
-	if threads < 1 {
-		threads = 20
+	if protokol == "udp" && noepayload != "dns" && noepayload != "ntp" && noepayload != "snmp" && noepayload != "none" {
+		fmt.Printf("%sKheta: -y bayad dns, ntp, snmp, ya none bashe%s\n", Red, Reset)
+		os.Exit(1)
+	}
+	if kamMasraf {
+		nokh = 20
+		timeoutMs = 1000
+	} else if nokh == 0 {
+		nokh = runtime.NumCPU() * 4
+	}
+	if nokh < 1 {
+		nokh = 20
 	}
 
-	ip := target
-	if net.ParseIP(target) == nil {
-		ips, err := net.LookupIP(target)
+	ip := hadaf
+	if net.ParseIP(hadaf) == nil {
+		ips, err := net.LookupIP(hadaf)
 		if err == nil && len(ips) > 0 {
 			ip = ips[0].String()
 		} else {
-			fmt.Printf("%sKheta: %s resolve nashod%s\n", Red, target, Reset)
+			fmt.Printf("%sKheta: %s resolve nashod%s\n", Red, hadaf, Reset)
 			os.Exit(1)
 		}
 	}
 
-	if err := ensureDir(outFile); err != nil {
-		fmt.Printf("%sKheta: pushe %s nasakht%s\n", Red, filepath.Dir(outFile), Reset)
+	if err := sakhtPushe(fileJSON); err != nil {
+		fmt.Printf("%sKheta: pushe %s nasakht%s\n", Red, filepath.Dir(fileJSON), Reset)
 		os.Exit(1)
 	}
 
-	fmt.Printf("%s>> Scan %s%s%s\n", Cyan, Bold, target, Reset)
-	if evasion {
-		fmt.Printf("%s>> Evasion mode: randomized ports + delay%s\n", Cyan, Reset)
+	fmt.Printf("%s>> Scan %s%s (%s)%s\n", Cyan, Bold, hadaf, protokol, Reset)
+	if makhfi {
+		fmt.Printf("%s>> Makhfi: port-haye tasadofi + dirang%s\n", Cyan, Reset)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -232,42 +295,42 @@ func main() {
 	timeout := time.Duration(timeoutMs) * time.Millisecond
 	totalPorts := maxPort - minPort + 1
 	jobs := make(chan int, totalPorts)
-	results := make(chan PortResult, totalPorts)
+	natayej := make(chan NatijePort, totalPorts)
 
 	var wg sync.WaitGroup
 	var collectWg sync.WaitGroup
-	found := make([]PortResult, 0, totalPorts)
+	natayeje := make([]NatijePort, 0, totalPorts)
 	collectWg.Add(1)
 
 	progress := 0
 	progressMutex := &sync.Mutex{}
-	openPorts := 0
+	bazPorts := 0
 
 	go func() {
 		defer collectWg.Done()
-		for r := range results {
+		for r := range natayej {
 			progressMutex.Lock()
 			progress++
-			if r.State == "open" || verbose {
-				fmt.Printf("%s%d: %s%s%s\n", Green, r.Port, Bold, r.State, Reset)
-				if r.Banner != "" {
-					fmt.Printf("%sBanner: %s%s\n", Cyan, r.Banner, Reset)
+			if r.Vaziyat == "baz" || mofasal {
+				fmt.Printf("%s%d/%s: %s%s%s\n", Green, r.Port, r.Protokol, Bold, r.Vaziyat, Reset)
+				if r.Baner != "" {
+					fmt.Printf("%sBaner: %s%s\n", Cyan, r.Baner, Reset)
 				}
-				if r.Version != "" {
-					fmt.Printf("%sVersion: %s%s\n", Cyan, r.Version, Reset)
+				if r.Noskhe != "" {
+					fmt.Printf("%sNoskhe: %s%s\n", Cyan, r.Noskhe, Reset)
 				}
 			}
-			if r.State == "open" {
-				openPorts++
+			if r.Vaziyat == "baz" {
+				bazPorts++
 			}
 			progressMutex.Unlock()
-			found = append(found, r)
+			natayeje = append(natayeje, r)
 		}
 	}()
 
-	for i := 0; i < threads; i++ {
+	for i := 0; i < nokh; i++ {
 		wg.Add(1)
-		go worker(ctx, jobs, results, &wg, ip, timeout, doBanner, lowResource)
+		go kargar(ctx, jobs, natayej, &wg, ip, timeout, doBaner, kamMasraf, protokol, noepayload)
 	}
 
 	startTime := time.Now()
@@ -288,7 +351,7 @@ func main() {
 	for p := minPort; p <= maxPort; p++ {
 		ports = append(ports, p)
 	}
-	if evasion {
+	if makhfi {
 		rand.Shuffle(len(ports), func(i, j int) { ports[i], ports[j] = ports[j], ports[i] })
 	}
 totalLoop:
@@ -297,7 +360,7 @@ totalLoop:
 		case <-ctx.Done():
 			break totalLoop
 		case jobs <- p:
-			if evasion {
+			if makhfi {
 				time.Sleep(time.Millisecond * time.Duration(rand.Intn(100)))
 			}
 		}
@@ -305,23 +368,23 @@ totalLoop:
 	close(jobs)
 
 	wg.Wait()
-	close(results)
+	close(natayej)
 	collectWg.Wait()
 
 	finishTime := time.Now()
-	elapsed := finishTime.Sub(startTime).Milliseconds()
+	zamanKol := finishTime.Sub(startTime).Milliseconds()
 
-	sort.Slice(found, func(i, j int) bool { return found[i].Port < found[j].Port })
+	sort.Slice(natayeje, func(i, j int) bool { return natayeje[i].Port < natayeje[j].Port })
 
-	scanRes := ScanResult{
-		Target:   target,
-		Started:  startTime.Format(time.RFC3339),
-		Finished: finishTime.Format(time.RFC3339),
-		Elapsed:  elapsed,
-		Ports:    found,
+	scanRes := NatijeScan{
+		Hadaf:    hadaf,
+		Shuru:    startTime.Format(time.RFC3339),
+		Tamam:    finishTime.Format(time.RFC3339),
+		ZamanKol: zamanKol,
+		PortHa:   natayeje,
 	}
 
-	tmp := outFile + ".tmp"
+	tmp := fileJSON + ".tmp"
 	f, err := os.Create(tmp)
 	if err != nil {
 		fmt.Printf("%sKheta: file %s nasakht%s\n", Red, tmp, Reset)
@@ -336,14 +399,14 @@ totalLoop:
 		os.Exit(1)
 	}
 	f.Close()
-	if err := os.Rename(tmp, outFile); err != nil {
-		fmt.Printf("%sKheta: rename %s nashod%s\n", Red, outFile, Reset)
+	if err := os.Rename(tmp, fileJSON); err != nil {
+		fmt.Printf("%sKheta: rename %s nashod%s\n", Red, fileJSON, Reset)
 		os.Exit(1)
 	}
 
 	fmt.Printf("\n%s>> Tamam!%s\n", Green, Reset)
-	fmt.Printf("%s%s%s\n", Cyan, target, Reset)
-	fmt.Printf("%sBaz: %d%s\n", Green, openPorts, Reset)
-	fmt.Printf("%sZaman: %d ms%s\n", Cyan, elapsed, Reset)
-	fmt.Printf("%sFile: %s%s%s\n", Cyan, Bold, outFile, Reset)
+	fmt.Printf("%s%s (%s)%s\n", Cyan, hadaf, protokol, Reset)
+	fmt.Printf("%sBaz: %d%s\n", Green, bazPorts, Reset)
+	fmt.Printf("%sZaman: %d ms%s\n", Cyan, zamanKol, Reset)
+	fmt.Printf("%sFile: %s%s%s\n", Cyan, Bold, fileJSON, Reset)
 }
