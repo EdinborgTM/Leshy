@@ -2,11 +2,10 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"os"
 	"os/signal"
@@ -30,7 +29,7 @@ const (
 )
 
 // Noskhe barname
-const Noskhe = "0.2.0"
+const Noskhe = "0.2.8"
 
 type NatijePort struct {
 	Port     int    `json:"port"`
@@ -54,7 +53,7 @@ func tasnifKheta(err error) string {
 		return "baz"
 	}
 	if ne, ok := err.(net.Error); ok && ne.Timeout() {
-		return "filtered"
+		return "baz|filtered"
 	}
 	lerr := strings.ToLower(err.Error())
 	if strings.Contains(lerr, "refused") || strings.Contains(lerr, "connection refused") {
@@ -64,40 +63,27 @@ func tasnifKheta(err error) string {
 		return "shabake-napadid"
 	}
 	if strings.Contains(lerr, "i/o timeout") || strings.Contains(lerr, "deadline") {
-		return "filtered"
+		return "baz|filtered"
 	}
 	return "kheta"
 }
 
-func girPayloadUDP(noepayload string) []byte {
-	switch strings.ToLower(noepayload) {
-	case "dns":
-		// DNS Query for A record with proper header and question (example.com)
-		data, _ := hex.DecodeString("1234 0100 0001 0000 0000 0000 07 65 78 61 6d 70 6c 65 03 63 6f 6d 00 00 01 00 01")
-		return data
-	case "ntp":
-		// NTP Version Info Request (stratum 0, poll 3, precision -6)
-		data, _ := hex.DecodeString("1b 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00")
-		return data
-	case "snmp":
-		// SNMP GetRequest for sysDescr (OID: 1.3.6.1.2.1.1.1.0)
-		data, _ := hex.DecodeString("30 2c 02 01 00 04 06 70 75 62 6c 69 63 a0 1f 02 04 00 00 00 01 02 01 00 02 01 00 30 11 30 0f 06 0b 2b 06 01 02 01 01 01 00 05 00")
-		return data
-	default:
-		return []byte{0x00} // Minimal probe for no payload
-	}
-}
-
 func girBaner(conn net.Conn, port int, protokol string, noepayload string) (baner, noskhe string) {
 	if protokol == "udp" {
-		if payload := girPayloadUDP(noepayload); payload != nil {
-			_, _ = conn.Write(payload)
+		if payload := GirPayloadUDP(noepayload); payload != nil {
+			_, err := conn.Write(payload)
+			if err != nil {
+				return "", ""
+			}
 		}
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(600 * time.Millisecond))
 	buf := make([]byte, 1024)
-	n, _ := conn.Read(buf)
-	if n == 0 {
+	n, err := conn.Read(buf)
+	if err != nil || n == 0 {
+		if protokol == "udp" {
+			return "", ""
+		}
 		return "", ""
 	}
 	baner = strings.TrimSpace(string(buf[:n]))
@@ -106,10 +92,13 @@ func girBaner(conn net.Conn, port int, protokol string, noepayload string) (bane
 	}
 
 	if protokol == "tcp" && (port == 80 || port == 443) {
-		_, _ = conn.Write([]byte("GET / HTTP/1.0\r\nHost: localhost\r\n\r\n"))
+		_, err := conn.Write([]byte("GET / HTTP/1.0\r\nHost: localhost\r\n\r\n"))
+		if err != nil {
+			return baner, ""
+		}
 		_ = conn.SetReadDeadline(time.Now().Add(600 * time.Millisecond))
-		n, _ = conn.Read(buf)
-		if n > 0 {
+		n, err := conn.Read(buf)
+		if err == nil && n > 0 {
 			response := string(buf[:n])
 			lines := strings.Split(response, "\r\n")
 			for _, line := range lines {
@@ -169,19 +158,19 @@ func kargar(ctx context.Context, jobs <-chan int, natayej chan<- NatijePort, wg 
 					conn, err = dialer.DialContext(ctx, "tcp", addr)
 				}
 			} else {
-				udpAddr, err := net.ResolveUDPAddr("udp", addr)
-				if err != nil {
-					natayej <- NatijePort{Port: port, Protokol: protokol, Vaziyat: tasnifKheta(err), Zaman: time.Since(start).Milliseconds()}
+				udpAddr, errResolve := net.ResolveUDPAddr("udp", addr)
+				if errResolve != nil {
+					natayej <- NatijePort{Port: port, Protokol: protokol, Vaziyat: tasnifKheta(errResolve), Zaman: time.Since(start).Milliseconds()}
 					continue
 				}
 				var udpConn *net.UDPConn
-				if kamMasraf {
-					udpConn, err = net.DialUDP("udp", nil, udpAddr)
-					if err == nil {
+				udpConn, err = net.DialUDP("udp", nil, udpAddr)
+				if err == nil {
+					if kamMasraf {
 						_ = udpConn.SetReadDeadline(time.Now().Add(timeout))
+					} else {
+						_ = udpConn.SetReadDeadline(time.Now().Add(600 * time.Millisecond))
 					}
-				} else {
-					udpConn, err = net.DialUDP("udp", nil, udpAddr)
 				}
 				conn = udpConn
 			}
@@ -196,7 +185,11 @@ func kargar(ctx context.Context, jobs <-chan int, natayej chan<- NatijePort, wg 
 			if doBaner {
 				baner, noskhe = girBaner(conn, port, protokol, noepayload)
 			}
-			_ = conn.Close()
+			if conn != nil {
+				if closeErr := conn.Close(); closeErr != nil {
+					fmt.Fprintf(os.Stderr, "%sKheta dar baste shodan port %d: %v%s\n", Red, port, closeErr, Reset)
+				}
+			}
 			natayej <- NatijePort{Port: port, Protokol: protokol, Vaziyat: "baz", Baner: baner, Noskhe: noskhe, Zaman: zaman}
 		}
 	}
@@ -238,7 +231,7 @@ func main() {
 	}
 
 	if hadaf == "" {
-		fmt.Printf("%sKheta: -t lazem%s\n", Red, Reset)
+		fmt.Printf("%sKheta: -t lazem ast%s\n", Red, Reset)
 		fmt.Println("Rahnuma: ./leshy -h")
 		os.Exit(1)
 	}
@@ -249,22 +242,25 @@ func main() {
 		maxPort = 65535
 	}
 	if minPort > maxPort {
-		fmt.Printf("%sKheta: -m > -x nist%s\n", Red, Reset)
+		fmt.Printf("%sKheta: kamtarin port (-m) bayad az bishtarin port (-x) kochektar bashad%s\n", Red, Reset)
 		os.Exit(1)
 	}
 	if protokol != "tcp" && protokol != "udp" {
-		fmt.Printf("%sKheta: -p bayad tcp ya udp bashe%s\n", Red, Reset)
+		fmt.Printf("%sKheta: protokol (-p) bayad 'tcp' ya 'udp' bashad%s\n", Red, Reset)
 		os.Exit(1)
 	}
 	if protokol == "udp" && noepayload != "dns" && noepayload != "ntp" && noepayload != "snmp" && noepayload != "none" {
-		fmt.Printf("%sKheta: -y bayad dns, ntp, snmp, ya none bashe%s\n", Red, Reset)
+		fmt.Printf("%sKheta: payload (-y) bayad 'dns', 'ntp', 'snmp', ya 'none' bashad%s\n", Red, Reset)
 		os.Exit(1)
 	}
 	if kamMasraf {
 		nokh = 20
 		timeoutMs = 1000
 	} else if nokh == 0 {
-		nokh = runtime.NumCPU() * 4
+		nokh = runtime.NumCPU() * 8 // Increased for better performance
+		if nokh > 100 {
+			nokh = 100 // Limit threads for stability
+		}
 	}
 	if nokh < 1 {
 		nokh = 20
@@ -273,16 +269,15 @@ func main() {
 	ip := hadaf
 	if net.ParseIP(hadaf) == nil {
 		ips, err := net.LookupIP(hadaf)
-		if err == nil && len(ips) > 0 {
-			ip = ips[0].String()
-		} else {
+		if err != nil || len(ips) == 0 {
 			fmt.Printf("%sKheta: %s resolve nashod%s\n", Red, hadaf, Reset)
 			os.Exit(1)
 		}
+		ip = ips[0].String()
 	}
 
 	if err := sakhtPushe(fileJSON); err != nil {
-		fmt.Printf("%sKheta: pushe %s nasakht%s\n", Red, filepath.Dir(fileJSON), Reset)
+		fmt.Printf("%sKheta: sakht pushe %s momken nashod: %v%s\n", Red, filepath.Dir(fileJSON), err, Reset)
 		os.Exit(1)
 	}
 
@@ -297,7 +292,7 @@ func main() {
 	signal.Notify(sigch, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigch
-		fmt.Printf("\n%s!! Ghat%s\n", Red, Reset)
+		fmt.Printf("\n%s!! Ghat shod%s\n", Red, Reset)
 		cancel()
 	}()
 
@@ -320,7 +315,7 @@ func main() {
 		for r := range natayej {
 			progressMutex.Lock()
 			progress++
-			if r.Vaziyat == "baz" || mofasal {
+			if r.Vaziyat == "baz" || r.Vaziyat == "baz|filtered" || mofasal {
 				fmt.Printf("%s%d/%s: %s%s%s\n", Green, r.Port, r.Protokol, Bold, r.Vaziyat, Reset)
 				if r.Baner != "" {
 					fmt.Printf("%sBaner: %s%s\n", Cyan, r.Baner, Reset)
@@ -329,7 +324,7 @@ func main() {
 					fmt.Printf("%sNoskhe: %s%s\n", Cyan, r.Noskhe, Reset)
 				}
 			}
-			if r.Vaziyat == "baz" {
+			if r.Vaziyat == "baz" || r.Vaziyat == "baz|filtered" {
 				bazPorts++
 			}
 			progressMutex.Unlock()
@@ -370,7 +365,7 @@ totalLoop:
 			break totalLoop
 		case jobs <- p:
 			if makhfi {
-				time.Sleep(time.Millisecond * time.Duration(rand.Intn(100)))
+				time.Sleep(time.Millisecond * time.Duration(rand.IntN(100)))
 			}
 		}
 	}
@@ -396,20 +391,25 @@ totalLoop:
 	tmp := fileJSON + ".tmp"
 	f, err := os.Create(tmp)
 	if err != nil {
-		fmt.Printf("%sKheta: file %s nasakht%s\n", Red, tmp, Reset)
+		fmt.Printf("%sKheta: sakht file %s momken nashod: %v%s\n", Red, tmp, err, Reset)
 		os.Exit(1)
 	}
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(scanRes); err != nil {
-		fmt.Printf("%sKheta: JSON nanevesht%s\n", Red, Reset)
+		fmt.Printf("%sKheta: neveshtan JSON be %s momken nashod: %v%s\n", Red, tmp, err, Reset)
 		f.Close()
 		os.Remove(tmp)
 		os.Exit(1)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		fmt.Printf("%sKheta: baste shodan file %s momken nashod: %v%s\n", Red, tmp, err, Reset)
+		os.Remove(tmp)
+		os.Exit(1)
+	}
 	if err := os.Rename(tmp, fileJSON); err != nil {
-		fmt.Printf("%sKheta: rename %s nashod%s\n", Red, fileJSON, Reset)
+		fmt.Printf("%sKheta: rename %s be %s momken nashod: %v%s\n", Red, tmp, fileJSON, err, Reset)
+		os.Remove(tmp)
 		os.Exit(1)
 	}
 
