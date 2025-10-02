@@ -29,13 +29,16 @@ const (
 	Bold  = "\033[1m"
 )
 
+// Noskhe barname
+const Noskhe = "0.2.0"
+
 type NatijePort struct {
-	Port    int    `json:"port"`
+	Port     int    `json:"port"`
 	Protokol string `json:"protokol"`
-	Vaziyat string `json:"vaziyat"`
-	Baner   string `json:"baner,omitempty"`
-	Noskhe  string `json:"noskhe,omitempty"`
-	Zaman   int64  `json:"zaman_ms"`
+	Vaziyat  string `json:"vaziyat"`
+	Baner    string `json:"baner,omitempty"`
+	Noskhe   string `json:"noskhe,omitempty"`
+	Zaman    int64  `json:"zaman_ms"`
 }
 
 type NatijeScan struct {
@@ -92,7 +95,7 @@ func girBaner(conn net.Conn, port int, protokol string, noepayload string) (bane
 		}
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(600 * time.Millisecond))
-	buf := make([]byte, 1024) // Increased buffer for detailed UDP responses
+	buf := make([]byte, 1024)
 	n, _ := conn.Read(buf)
 	if n == 0 {
 		return "", ""
@@ -121,7 +124,6 @@ func girBaner(conn net.Conn, port int, protokol string, noepayload string) (bane
 	}
 
 	if noskhe == "" && baner != "" {
-		// Extract version from banner
 		lowerBaner := strings.ToLower(baner)
 		if strings.Contains(lowerBaner, "ssh-") || strings.Contains(lowerBaner, "ftp") || strings.Contains(lowerBaner, "220 ") {
 			noskhe = strings.SplitN(baner, "\n", 2)[0]
@@ -160,8 +162,8 @@ func kargar(ctx context.Context, jobs <-chan int, natayej chan<- NatijePort, wg 
 			if protokol == "tcp" {
 				dialer := &net.Dialer{}
 				if kamMasraf {
-					connCtx, cancel := context.WithTimeout(ctx, timeout)
-					conn, err = dialer.DialContext(connCtx, "tcp", addr)
+					ctxTimeout, cancel := context.WithTimeout(ctx, timeout)
+					conn, err = dialer.DialContext(ctxTimeout, "tcp", addr)
 					cancel()
 				} else {
 					conn, err = dialer.DialContext(ctx, "tcp", addr)
@@ -174,9 +176,10 @@ func kargar(ctx context.Context, jobs <-chan int, natayej chan<- NatijePort, wg 
 				}
 				var udpConn *net.UDPConn
 				if kamMasraf {
-					connCtx, cancel := context.WithTimeout(ctx, timeout)
 					udpConn, err = net.DialUDP("udp", nil, udpAddr)
-					cancel()
+					if err == nil {
+						_ = udpConn.SetReadDeadline(time.Now().Add(timeout))
+					}
 				} else {
 					udpConn, err = net.DialUDP("udp", nil, udpAddr)
 				}
@@ -211,7 +214,7 @@ func main() {
 	var hadaf string
 	var minPort, maxPort, nokh int
 	var timeoutMs int
-	var doBaner, mofasal, kamMasraf, makhfi bool
+	var doBaner, mofasal, kamMasraf, makhfi, neshanNoskhe bool
 	var fileJSON, protokol, noepayload string
 
 	flag.StringVar(&hadaf, "t", "", "hadaf (IP ya hostname) - lazem")
@@ -226,7 +229,13 @@ func main() {
 	flag.StringVar(&fileJSON, "u", "/sdcard/leshy_scan.json", "file JSON")
 	flag.StringVar(&protokol, "p", "tcp", "protokol (tcp ya udp)")
 	flag.StringVar(&noepayload, "y", "none", "payload baraye udp (dns, ntp, snmp, ya none)")
+	flag.BoolVar(&neshanNoskhe, "V", false, "neshan dadan noskhe barname")
 	flag.Parse()
+
+	if neshanNoskhe {
+		fmt.Printf("Leshy Scanner Port, Noskhe: %s\n", Noskhe)
+		os.Exit(0)
+	}
 
 	if hadaf == "" {
 		fmt.Printf("%sKheta: -t lazem%s\n", Red, Reset)
