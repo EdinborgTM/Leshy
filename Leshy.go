@@ -419,3 +419,4 @@ totalLoop:
 	fmt.Printf("%sZaman: %d ms%s\n", Cyan, zamanKol, Reset)
 	fmt.Printf("%sFile: %s%s%s\n", Cyan, Bold, fileJSON, Reset)
 }
+
