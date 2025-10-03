@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"math/rand/v2"
+	"math/rand"
 	"net"
 	"os"
 	"os/signal"
@@ -29,7 +29,7 @@ const (
 )
 
 // Noskhe barname
-const Noskhe = "0.2.8"
+const Noskhe = "0.2.16"
 
 type NatijePort struct {
 	Port     int    `json:"port"`
@@ -48,7 +48,7 @@ type NatijeScan struct {
 	PortHa   []NatijePort `json:"port_ha"`
 }
 
-func tasnifKheta(err error) string {
+func tasnifKheta(err error, protokol string) string {
 	if err == nil {
 		return "baz"
 	}
@@ -68,35 +68,102 @@ func tasnifKheta(err error) string {
 	return "kheta"
 }
 
+// decodeDNSResponse: Extract TXT record from DNS response
+func decodeDNSResponse(data []byte) string {
+	if len(data) < 12 {
+		return ""
+	}
+	// Skip DNS header (12 bytes)
+	pos := 12
+	// Read query name
+	for pos < len(data) && data[pos] != 0 {
+		pos += int(data[pos]) + 1
+	}
+	pos++ // Skip null byte
+	if pos >= len(data) {
+		return ""
+	}
+	// Skip QTYPE and QCLASS (4 bytes)
+	pos += 4
+	if pos >= len(data) {
+		return ""
+	}
+	// Read answer section
+	for pos < len(data) && data[pos] != 0 {
+		pos += int(data[pos]) + 1
+	}
+	pos++ // Skip null byte
+	if pos+10 >= len(data) {
+		return ""
+	}
+	// Skip TYPE, CLASS, TTL, RDLENGTH (10 bytes)
+	pos += 10
+	if pos >= len(data) {
+		return ""
+	}
+	// Read TXT record length
+	txtLen := int(data[pos])
+	pos++
+	if pos+txtLen > len(data) {
+		return ""
+	}
+	// Extract TXT record
+	txt := string(data[pos : pos+txtLen])
+	return strings.TrimSpace(txt)
+}
+
 func girBaner(conn net.Conn, port int, protokol string, noepayload string) (baner, noskhe string) {
 	if protokol == "udp" {
 		if payload := GirPayloadUDP(noepayload); payload != nil {
+			fmt.Fprintf(os.Stderr, "%sErsal payload UDP baraye port %d (%s): %v%s\n", Cyan, port, noepayload, payload, Reset)
 			_, err := conn.Write(payload)
 			if err != nil {
+				fmt.Fprintf(os.Stderr, "%sKheta dar ersal payload UDP baraye port %d: %v%s\n", Red, port, err, Reset)
 				return "", ""
 			}
-		}
-	}
-	_ = conn.SetReadDeadline(time.Now().Add(600 * time.Millisecond))
-	buf := make([]byte, 1024)
-	n, err := conn.Read(buf)
-	if err != nil || n == 0 {
-		if protokol == "udp" {
+		} else {
+			fmt.Fprintf(os.Stderr, "%sPayload UDP baraye %s namojud ast%s\n", Red, noepayload, Reset)
 			return "", ""
 		}
+		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	} else {
+		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	}
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%sKheta dar khandan baner baraye port %d: %v%s\n", Red, port, err, Reset)
 		return "", ""
 	}
-	baner = strings.TrimSpace(string(buf[:n]))
-	if len(baner) > 1024 {
-		baner = baner[:1024]
+	if n == 0 {
+		fmt.Fprintf(os.Stderr, "%sHich dadei az port %d (%s) daryaft nashod%s\n", Red, port, protokol, Reset)
+		return "", ""
+	}
+
+	// Extract ASCII-only for cleaner banner
+	baner = ""
+	if noepayload == "version.bind" && protokol == "udp" && port == 53 {
+		baner = decodeDNSResponse(buf[:n])
+		noskhe = baner
+	} else {
+		for _, b := range buf[:n] {
+			if b >= 32 && b <= 126 { // Printable ASCII
+				baner += string(b)
+			}
+		}
+		baner = strings.TrimSpace(baner)
+		if len(baner) > 1024 {
+			baner = baner[:1024]
+		}
 	}
 
 	if protokol == "tcp" && (port == 80 || port == 443) {
 		_, err := conn.Write([]byte("GET / HTTP/1.0\r\nHost: localhost\r\n\r\n"))
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "%sKheta dar ersal HTTP request baraye port %d: %v%s\n", Red, port, err, Reset)
 			return baner, ""
 		}
-		_ = conn.SetReadDeadline(time.Now().Add(600 * time.Millisecond))
+		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 		n, err := conn.Read(buf)
 		if err == nil && n > 0 {
 			response := string(buf[:n])
@@ -112,7 +179,7 @@ func girBaner(conn net.Conn, port int, protokol string, noepayload string) (bane
 		}
 	}
 
-	if noskhe == "" && baner != "" {
+	if noskhe == "" && baner != "" && noepayload != "version.bind" {
 		lowerBaner := strings.ToLower(baner)
 		if strings.Contains(lowerBaner, "ssh-") || strings.Contains(lowerBaner, "ftp") || strings.Contains(lowerBaner, "220 ") {
 			noskhe = strings.SplitN(baner, "\n", 2)[0]
@@ -131,6 +198,7 @@ func girBaner(conn net.Conn, port int, protokol string, noepayload string) (bane
 		}
 	}
 
+	fmt.Fprintf(os.Stderr, "%sBaner daryaft shod baraye port %d (%s): %s%s\n", Cyan, port, protokol, baner, Reset)
 	return baner, noskhe
 }
 
@@ -160,7 +228,7 @@ func kargar(ctx context.Context, jobs <-chan int, natayej chan<- NatijePort, wg 
 			} else {
 				udpAddr, errResolve := net.ResolveUDPAddr("udp", addr)
 				if errResolve != nil {
-					natayej <- NatijePort{Port: port, Protokol: protokol, Vaziyat: tasnifKheta(errResolve), Zaman: time.Since(start).Milliseconds()}
+					natayej <- NatijePort{Port: port, Protokol: protokol, Vaziyat: tasnifKheta(errResolve, protokol), Zaman: time.Since(start).Nanoseconds() / 1e6}
 					continue
 				}
 				var udpConn *net.UDPConn
@@ -169,15 +237,13 @@ func kargar(ctx context.Context, jobs <-chan int, natayej chan<- NatijePort, wg 
 					if kamMasraf {
 						_ = udpConn.SetReadDeadline(time.Now().Add(timeout))
 					} else {
-						_ = udpConn.SetReadDeadline(time.Now().Add(600 * time.Millisecond))
+						_ = udpConn.SetReadDeadline(time.Now().Add(3 * time.Second))
 					}
 				}
 				conn = udpConn
 			}
-			zaman := time.Since(start).Milliseconds()
-
 			if err != nil {
-				natayej <- NatijePort{Port: port, Protokol: protokol, Vaziyat: tasnifKheta(err), Zaman: zaman}
+				natayej <- NatijePort{Port: port, Protokol: protokol, Vaziyat: tasnifKheta(err, protokol), Zaman: time.Since(start).Nanoseconds() / 1e6}
 				continue
 			}
 
@@ -190,7 +256,11 @@ func kargar(ctx context.Context, jobs <-chan int, natayej chan<- NatijePort, wg 
 					fmt.Fprintf(os.Stderr, "%sKheta dar baste shodan port %d: %v%s\n", Red, port, closeErr, Reset)
 				}
 			}
-			natayej <- NatijePort{Port: port, Protokol: protokol, Vaziyat: "baz", Baner: baner, Noskhe: noskhe, Zaman: zaman}
+			vaziyat := tasnifKheta(err, protokol)
+			if baner == "" && noskhe == "" && protokol == "udp" {
+				vaziyat = "baz|filtered"
+			}
+			natayej <- NatijePort{Port: port, Protokol: protokol, Vaziyat: vaziyat, Baner: baner, Noskhe: noskhe, Zaman: time.Since(start).Nanoseconds() / 1e6}
 		}
 	}
 }
@@ -209,19 +279,21 @@ func main() {
 	var timeoutMs int
 	var doBaner, mofasal, kamMasraf, makhfi, neshanNoskhe bool
 	var fileJSON, protokol, noepayload string
+	var udpTimeout int
 
 	flag.StringVar(&hadaf, "t", "", "hadaf (IP ya hostname) - lazem")
 	flag.IntVar(&minPort, "m", 1, "kamtarin port")
 	flag.IntVar(&maxPort, "x", 1024, "bishtarin port")
 	flag.IntVar(&nokh, "r", 0, "tedad nokh (0 = auto)")
 	flag.IntVar(&timeoutMs, "o", 1000, "timeout (ms, faghat ba -l)")
+	flag.IntVar(&udpTimeout, "w", 3000, "timeout UDP (ms, baraye baner)")
 	flag.BoolVar(&doBaner, "b", false, "khandan baner va noskhe")
 	flag.BoolVar(&mofasal, "v", false, "khoruji mofasal")
 	flag.BoolVar(&kamMasraf, "l", false, "kam masraf baraye termux")
 	flag.BoolVar(&makhfi, "f", false, "makhfi az firewall")
 	flag.StringVar(&fileJSON, "u", "/sdcard/leshy_scan.json", "file JSON")
 	flag.StringVar(&protokol, "p", "tcp", "protokol (tcp ya udp)")
-	flag.StringVar(&noepayload, "y", "none", "payload baraye udp (dns, ntp, snmp, ya none)")
+	flag.StringVar(&noepayload, "y", "none", "payload baraye udp (dns, version.bind, ntp, snmp, test, ya none)")
 	flag.BoolVar(&neshanNoskhe, "V", false, "neshan dadan noskhe barname")
 	flag.Parse()
 
@@ -249,21 +321,24 @@ func main() {
 		fmt.Printf("%sKheta: protokol (-p) bayad 'tcp' ya 'udp' bashad%s\n", Red, Reset)
 		os.Exit(1)
 	}
-	if protokol == "udp" && noepayload != "dns" && noepayload != "ntp" && noepayload != "snmp" && noepayload != "none" {
-		fmt.Printf("%sKheta: payload (-y) bayad 'dns', 'ntp', 'snmp', ya 'none' bashad%s\n", Red, Reset)
+	if protokol == "udp" && noepayload != "dns" && noepayload != "ntp" && noepayload != "snmp" && noepayload != "test" && noepayload != "version.bind" && noepayload != "none" {
+		fmt.Printf("%sKhta: payload (-y) bayad 'dns', 'ntp', 'snmp', 'test', 'version.bind', ya 'none' bashad%s\n", Red, Reset)
 		os.Exit(1)
 	}
 	if kamMasraf {
 		nokh = 20
 		timeoutMs = 1000
 	} else if nokh == 0 {
-		nokh = runtime.NumCPU() * 8 // Increased for better performance
+		nokh = runtime.NumCPU() * 8
 		if nokh > 100 {
-			nokh = 100 // Limit threads for stability
+			nokh = 100
 		}
 	}
 	if nokh < 1 {
 		nokh = 20
+	}
+	if udpTimeout < 500 {
+		udpTimeout = 500
 	}
 
 	ip := hadaf
@@ -356,6 +431,7 @@ func main() {
 		ports = append(ports, p)
 	}
 	if makhfi {
+		rand.Seed(time.Now().UnixNano())
 		rand.Shuffle(len(ports), func(i, j int) { ports[i], ports[j] = ports[j], ports[i] })
 	}
 totalLoop:
@@ -365,7 +441,7 @@ totalLoop:
 			break totalLoop
 		case jobs <- p:
 			if makhfi {
-				time.Sleep(time.Millisecond * time.Duration(rand.IntN(100)))
+				time.Sleep(time.Millisecond * time.Duration(rand.Intn(100)))
 			}
 		}
 	}
@@ -419,4 +495,3 @@ totalLoop:
 	fmt.Printf("%sZaman: %d ms%s\n", Cyan, zamanKol, Reset)
 	fmt.Printf("%sFile: %s%s%s\n", Cyan, Bold, fileJSON, Reset)
 }
-
